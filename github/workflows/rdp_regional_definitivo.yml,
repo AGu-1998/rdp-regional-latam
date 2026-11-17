@@ -1,144 +1,32 @@
 
-name: RDP Regional Flexible con Tailscale
-
-on:
-  workflow_dispatch:
-    inputs:
-      duration:
-        description: "Duracion de la PC en minutos"
-        required: true
-        type: choice
-        default: "120"
-        options:
-          - "60"
-          - "120"
-          - "180"
-          - "240"
-
-permissions:
-  contents: read
-
-jobs:
-  remote-desktop:
-    name: Ubuntu XFCE + XRDP + Tailscale
-    runs-on: ubuntu-24.04
-    timeout-minutes: 250
-
-    steps:
-      - name: 1. Detectar ubicacion aproximada
+      - name: 1. Detectar y validar region
         id: region
         shell: bash
         run: |
           set -euo pipefail
+
           GEO="$(curl -4fsS --max-time 20 https://ipinfo.io/json)"
+
           COUNTRY="$(echo "$GEO" | jq -r '.country // "UNKNOWN"')"
           CITY="$(echo "$GEO" | jq -r '.city // "desconocida"')"
-          echo "country=$COUNTRY" >> "$GITHUB_OUTPUT"
+          REGION="$(echo "$GEO" | jq -r '.region // "desconocida"')"
+
           echo "Pais: $COUNTRY"
-          echo "Ciudad aproximada: $CITY"
+          echo "Ciudad: $CITY"
+          echo "Region: $REGION"
+
+          echo "country=$COUNTRY" >> "$GITHUB_OUTPUT"
 
           case "$COUNTRY" in
             BR)
-              echo "PRIORIDAD: Brasil."
+              echo "BRASIL DETECTADO: prioridad maxima."
               ;;
             AR|BO|BZ|CL|CO|CR|CU|DO|EC|SV|GT|HN|HT|JM|MX|NI|PA|PE|PR|PY|TT|UY|VE)
-              echo "Ubicacion LATAM/Caribe detectada."
+              echo "LATINOAMERICA DETECTADA."
               ;;
             *)
-              echo "ADVERTENCIA: fuera de LATAM. Se permite continuar."
-              echo "GitHub asigna la ubicacion; este workflow no puede elegirla."
+              echo "::error::Servidor fuera de Latinoamerica: $COUNTRY"
+              echo "No se instalaran escritorio ni XRDP."
+              exit 1
               ;;
           esac
-
-      - name: 2. Diagnosticar recursos
-        shell: bash
-        run: |
-          echo "===== CPU ====="
-          lscpu | grep -E 'Model name|^CPU\(s\):' | head -n 4
-          echo "===== RAM ====="
-          free -h
-          echo "===== DISCO ====="
-          df -h /
-
-      - name: 3. Instalar escritorio y XRDP
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            xfce4 xfce4-goodies xrdp xorgxrdp dbus-x11
-
-      - name: 4. Crear usuario y configurar escritorio
-        shell: bash
-        env:
-          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
-        run: |
-          set -euo pipefail
-
-          if [[ -z "${RDP_PASSWORD:-}" || ${#RDP_PASSWORD} -lt 20 ]]; then
-            echo "ERROR: RDP_PASSWORD falta o tiene menos de 20 caracteres."
-            exit 1
-          fi
-
-          sudo useradd -m -s /bin/bash runneradmin
-          printf 'runneradmin:%s\n' "$RDP_PASSWORD" | sudo chpasswd
-
-          echo "startxfce4" | sudo tee /home/runneradmin/.xsession >/dev/null
-          sudo chown runneradmin:runneradmin /home/runneradmin/.xsession
-          sudo chmod 600 /home/runneradmin/.xsession
-
-          sudo adduser xrdp ssl-cert || true
-          sudo systemctl enable xrdp
-          sudo systemctl restart xrdp
-          sleep 5
-
-          sudo systemctl is-active --quiet xrdp
-          sudo ss -ltn | grep -q ':3389'
-          echo "XRDP activo en puerto 3389."
-
-      - name: 5. Conectar Tailscale
-        uses: tailscale/github-action@v4
-        with:
-          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
-
-      - name: 6. Mostrar datos de conexion
-        shell: bash
-        run: |
-          set -euo pipefail
-          for i in $(seq 1 30); do
-            TS_IP="$(tailscale ip -4 2>/dev/null | head -n 1 || true)"
-            if [[ -n "$TS_IP" ]]; then
-              break
-            fi
-            sleep 2
-          done
-
-          if [[ -z "${TS_IP:-}" ]]; then
-            echo "ERROR: Tailscale no entrego una IP."
-            exit 1
-          fi
-
-          echo "================================"
-          echo "ESCRITORIO UBUNTU DISPONIBLE"
-          echo "Pais detectado: ${{ steps.region.outputs.country }}"
-          echo "IP Tailscale: $TS_IP"
-          echo "Puerto: 3389"
-          echo "Usuario: runneradmin"
-          echo "Contrasena: secreto RDP_PASSWORD"
-          echo "================================"
-          tailscale status
-
-      - name: 7. Mantener PC encendida
-        shell: bash
-        env:
-          DURATION: ${{ inputs.duration }}
-        run: |
-          set -euo pipefail
-          case "$DURATION" in
-            60|120|180|240) ;;
-            *) echo "Duracion no valida."; exit 1 ;;
-          esac
-
-          echo "PC activa durante $DURATION minutos."
-          sleep "${DURATION}m"
-          echo "Tiempo terminado. La PC temporal se apagara."
