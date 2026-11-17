@@ -179,4 +179,3 @@ jobs:
           sleep "${DURATION}m"
 
           echo "Tiempo finalizado."
-concurrency: 
