@@ -1,5 +1,5 @@
 
-name: VPS Finder LATAM V2 - Brazil First
+name: VPS Finder LATAM V3
 
 on:
   workflow_dispatch:
@@ -30,7 +30,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
 
       - name: Instalar dependencias
         run: |
@@ -76,12 +75,12 @@ jobs:
           results = []
 
           print("=" * 60)
-          print("       VPS FINDER LATAM V2")
+          print("       VPS FINDER LATAM V3")
           print("=" * 60)
 
           session = requests.Session()
           session.headers.update({
-              "User-Agent": "VPS-LATAM-Finder/2.0"
+              "User-Agent": "VPS-LATAM-Finder/3.0"
           })
 
           for name, region in regions.items():
@@ -125,8 +124,13 @@ jobs:
 
               results.append(result)
 
-          with open("vps_results.json", "w") as file:
-              json.dump(results, file, indent=2, ensure_ascii=False)
+          with open("vps_results.json", "w", encoding="utf-8") as file:
+              json.dump(
+                  results,
+                  file,
+                  indent=2,
+                  ensure_ascii=False
+              )
 
           print("\n" + "=" * 60)
           print("RESULTADOS")
@@ -140,18 +144,18 @@ jobs:
                   else "Sin conexion"
               )
 
-          print("\nArchivo generado: vps_results.json")
-          print("Busqueda terminada.")
-          print("IMPORTANTE:")
-          print("La conexion HTTP no confirma capacidad de VPS.")
-          print("Tampoco confirma que exista un plan gratuito.")
+          print("\nBusqueda terminada.")
+          print("Resultados guardados en vps_results.json")
+          print("HTTP accesible NO significa VPS disponible.")
+          print("No se han creado instancias.")
+
           PY
 
-      - name: Subir resultados
+      - name: Guardar resultados
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: VPS-Finder-LATAM-V2
+          name: VPS-Finder-LATAM-V3
           path: vps_results.json
           if-no-files-found: warn
           retention-days: 7
