@@ -1,0 +1,119 @@
+name: VPS Finder LATAM - Brasil First
+
+on:
+  workflow_dispatch:
+    inputs:
+      search_mode:
+        description: "Tipo de busqueda"
+        required: true
+        type: choice
+        default: "all"
+        options:
+          - all
+          - brazil
+          - latam
+
+permissions:
+  contents: read
+
+jobs:
+  regional-vps-finder:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Descargar buscador
+        uses: actions/checkout@v4
+
+      - name: Preparar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Buscar proveedores y regiones
+        env:
+          SEARCH_MODE: ${{ inputs.search_mode }}
+        run: |
+          python - <<'PY'
+          import requests
+          import os
+          import json
+
+          mode = os.getenv("SEARCH_MODE", "all")
+
+          regions = {
+              "Brasil - Sao Paulo": "sa-saopaulo-1",
+              "Brasil - Vinhedo": "sa-vinhedo-1",
+              "Chile - Santiago": "sa-santiago-1",
+              "Argentina - Buenos Aires": "sa-buenosaires-1",
+              "Colombia - Bogota": "sa-bogota-1",
+              "Mexico - Queretaro": "mx-queretaro-1",
+              "Mexico - Monterrey": "mx-monterrey-1",
+              "Uruguay": "sa-montevideo-1",
+              "Peru": "sa-lima-1",
+          }
+
+          print("=" * 60)
+          print("       VPS REGIONAL FINDER - LATAM")
+          print("=" * 60)
+
+          if mode == "brazil":
+              regions = {
+                  k: v for k, v in regions.items()
+                  if "Brasil" in k
+              }
+
+          elif mode == "latam":
+              regions = {
+                  k: v for k, v in regions.items()
+                  if "Brasil" not in k
+              }
+
+          results = []
+
+          for name, region in regions.items():
+              endpoint = (
+                  f"https://objectstorage.{region}.oraclecloud.com"
+              )
+
+              try:
+                  response = requests.get(
+                      endpoint,
+                      timeout=8
+                  )
+
+                  status = response.status_code
+
+                  results.append({
+                      "name": name,
+                      "region": region,
+                      "http_status": status,
+                      "endpoint_reachable": status < 500
+                  })
+
+                  print(f"\n{name}")
+                  print(f"Region: {region}")
+                  print(f"HTTP: {status}")
+
+              except requests.RequestException as error:
+                  print(f"\n{name}: Error de conexion")
+                  results.append({
+                      "name": name,
+                      "region": region,
+                      "error": str(error)
+                  })
+
+          with open("vps_results.json", "w") as file:
+              json.dump(results, file, indent=2)
+
+          print("\nBusqueda finalizada.")
+          print("Resultados guardados en vps_results.json")
+          print("NOTA: esto no confirma capacidad de VPS.")
+          PY
+
+      - name: Guardar resultados
+        uses: actions/upload-artifact@v4
+        with:
+          name: VPS-Finder-LATAM-Results
+          path: vps_results.json
+          if-no-files-found: error
