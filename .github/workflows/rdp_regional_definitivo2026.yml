@@ -1,0 +1,182 @@
+
+name: RDP Regional Auto-Discovery V2
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: "Duracion de la PC en minutos"
+        required: true
+        type: choice
+        default: "120"
+        options:
+          - "60"
+          - "120"
+          - "180"
+          - "240"
+
+permissions:
+  contents: read
+
+jobs:
+  remote-desktop:
+    name: Regional Linux RDP
+    runs-on: ubuntu-24.04
+    timeout-minutes: 250
+
+    steps:
+      - name: 1. Detectar ubicacion real
+        id: region
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          GEO="$(curl -4fsS --max-time 20 https://ipinfo.io/json)"
+          COUNTRY="$(echo "$GEO" | jq -r '.country // "UNKNOWN"')"
+          CITY="$(echo "$GEO" | jq -r '.city // "UNKNOWN"')"
+
+          echo "country=$COUNTRY" >> "$GITHUB_OUTPUT"
+
+          echo "Pais: $COUNTRY"
+          echo "Ciudad: $CITY"
+
+          case "$COUNTRY" in
+            BR)
+              echo "PRIORIDAD BRASIL DETECTADA"
+              ;;
+            AR|BO|BZ|CL|CO|CR|CU|DO|EC|SV|GT|HN|HT|JM|MX|NI|PA|PE|PR|PY|TT|UY|VE)
+              echo "LATINOAMERICA DETECTADA"
+              ;;
+            *)
+              echo "::error::Ubicacion no permitida: $COUNTRY"
+              exit 1
+              ;;
+          esac
+
+      - name: 2. Diagnosticar hardware
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "===== CPU ====="
+          lscpu | grep -E 'Model name|^CPU\(s\):' | head
+
+          echo "===== MEMORIA ====="
+          free -h
+
+          echo "===== DISCO ====="
+          df -h /
+
+          echo "===== RED ====="
+          curl -4fsS --max-time 15 https://ipinfo.io/ip
+          echo
+
+      - name: 3. Instalar XFCE y XRDP
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            xfce4 \
+            xfce4-goodies \
+            xrdp \
+            xorgxrdp \
+            dbus-x11
+
+      - name: 4. Configurar usuario RDP
+        shell: bash
+        env:
+          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${RDP_PASSWORD:-}" || ${#RDP_PASSWORD} -lt 20 ]]; then
+            echo "::error::RDP_PASSWORD debe tener al menos 20 caracteres."
+            exit 1
+          fi
+
+          sudo useradd -m -s /bin/bash runneradmin
+
+          printf 'runneradmin:%s\n' "$RDP_PASSWORD" \
+            | sudo chpasswd
+
+          echo "startxfce4" \
+            | sudo tee /home/runneradmin/.xsession >/dev/null
+
+          sudo chown runneradmin:runneradmin \
+            /home/runneradmin/.xsession
+
+          sudo chmod 600 /home/runneradmin/.xsession
+
+          sudo adduser xrdp ssl-cert || true
+
+          sudo systemctl enable xrdp
+          sudo systemctl restart xrdp
+
+          sleep 5
+
+          sudo systemctl is-active --quiet xrdp
+          sudo ss -ltn | grep -q ':3389'
+
+          echo "XRDP funcionando."
+
+      - name: 5. Conectar Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+
+      - name: 6. Verificar conexion
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TS_IP=""
+
+          for i in $(seq 1 30); do
+            TS_IP="$(tailscale ip -4 2>/dev/null | head -n 1 || true)"
+
+            if [[ -n "$TS_IP" ]]; then
+              break
+            fi
+
+            sleep 2
+          done
+
+          if [[ -z "$TS_IP" ]]; then
+            echo "::error::No se obtuvo IP de Tailscale."
+            exit 1
+          fi
+
+          echo "================================"
+          echo "RDP REGIONAL DISPONIBLE"
+          echo "Pais: ${{ steps.region.outputs.country }}"
+          echo "IP Tailscale: $TS_IP"
+          echo "Puerto: 3389"
+          echo "Usuario: runneradmin"
+          echo "================================"
+
+          tailscale status
+
+      - name: 7. Mantener PC encendida
+        shell: bash
+        env:
+          DURATION: ${{ inputs.duration }}
+        run: |
+          set -euo pipefail
+
+          case "$DURATION" in
+            60|120|180|240) ;;
+            *)
+              echo "Duracion invalida."
+              exit 1
+              ;;
+          esac
+
+          echo "PC activa durante $DURATION minutos."
+
+          sleep "${DURATION}m"
+
+          echo "Tiempo finalizado."
+concurrency: 
