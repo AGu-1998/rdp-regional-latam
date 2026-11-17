@@ -1,11 +1,11 @@
 
-name: VPS Finder LATAM V3
+name: VPS Finder LATAM V4 - Multi Provider
 
 on:
   workflow_dispatch:
     inputs:
       search_mode:
-        description: "Seleccionar regiones"
+        description: "Region de investigacion"
         required: true
         type: choice
         default: all
@@ -31,131 +31,325 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Instalar dependencias
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install requests
-
-      - name: Buscar regiones LATAM
+      - name: Ejecutar buscador regional
         env:
           SEARCH_MODE: ${{ inputs.search_mode }}
         run: |
           python - <<'PY'
-          import requests
-          import os
+          import urllib.request
+          import urllib.error
           import json
+          import re
+          import os
           from datetime import datetime, timezone
+          from html.parser import HTMLParser
 
-          regions = {
-              "Brasil - Sao Paulo": "sa-saopaulo-1",
-              "Brasil - Vinhedo": "sa-vinhedo-1",
-              "Chile - Santiago": "sa-santiago-1",
-              "Argentina - Buenos Aires": "sa-buenosaires-1",
-              "Colombia - Bogota": "sa-bogota-1",
-              "Mexico - Queretaro": "mx-queretaro-1",
-              "Mexico - Monterrey": "mx-monterrey-1",
-              "Uruguay - Montevideo": "sa-montevideo-1",
-              "Peru - Lima": "sa-lima-1"
-          }
+          class TextExtractor(HTMLParser):
+              def __init__(self):
+                  super().__init__()
+                  self.parts = []
+                  self.hidden = 0
 
-          mode = os.getenv("SEARCH_MODE", "all")
+              def handle_starttag(self, tag, attrs):
+                  if tag in ("script", "style", "noscript", "svg"):
+                      self.hidden += 1
 
-          if mode == "brazil":
-              regions = {
-                  k: v for k, v in regions.items()
-                  if k.startswith("Brasil")
+              def handle_endtag(self, tag):
+                  if tag in ("script", "style", "noscript", "svg"):
+                      self.hidden = max(0, self.hidden - 1)
+
+              def handle_data(self, data):
+                  if not self.hidden:
+                      self.parts.append(data)
+
+          PROVIDERS = [
+              {
+                  "name": "Oracle Cloud",
+                  "category": "Cloud VPS",
+                  "country": "Multiple regions",
+                  "url": "https://www.oracle.com/cloud/free/",
+                  "free_url": "https://www.oracle.com/cloud/free/faq/",
+                  "regions_url": "https://docs.oracle.com/en-us/iaas/Content/General/Concepts/regions.htm",
+                  "notes": "Always Free and trial; card verification required."
+              },
+              {
+                  "name": "Amazon AWS",
+                  "category": "Cloud VPS",
+                  "country": "Brazil and other regions",
+                  "url": "https://aws.amazon.com/free/",
+                  "free_url": "https://aws.amazon.com/free/free-tier-faqs/",
+                  "notes": "Free plan and promotional credits; not permanent VPS."
+              },
+              {
+                  "name": "Google Cloud",
+                  "category": "Cloud VPS",
+                  "country": "Brazil and other regions",
+                  "url": "https://cloud.google.com/free",
+                  "free_url": "https://cloud.google.com/signup-faqs",
+                  "notes": "Free Tier and temporary trial credits."
+              },
+              {
+                  "name": "Microsoft Azure",
+                  "category": "Cloud VPS",
+                  "country": "Brazil and other regions",
+                  "url": "https://azure.microsoft.com/free/",
+                  "notes": "Free services and trial offers; verify duration."
+              },
+              {
+                  "name": "Vultr",
+                  "category": "VPS hosting",
+                  "country": "Multiple regions",
+                  "url": "https://www.vultr.com/",
+                  "regions_url": "https://www.vultr.com/features/datacenter-locations/",
+                  "notes": "Paid VPS provider; investigate regional locations."
+              },
+              {
+                  "name": "DigitalOcean",
+                  "category": "Cloud VPS",
+                  "country": "Multiple regions",
+                  "url": "https://www.digitalocean.com/",
+                  "regions_url": "https://docs.digitalocean.com/platform/regional-availability/",
+                  "notes": "Paid cloud provider; investigate regional availability."
+              },
+              {
+                  "name": "Akamai Cloud",
+                  "category": "Cloud VPS",
+                  "country": "Multiple regions",
+                  "url": "https://www.linode.com/",
+                  "regions_url": "https://www.linode.com/global-infrastructure/",
+                  "notes": "Paid cloud provider; investigate regional availability."
               }
+          ]
 
-          elif mode == "latam":
-              regions = {
-                  k: v for k, v in regions.items()
-                  if not k.startswith("Brasil")
+          OCI_REGIONS = [
+              {
+                  "country": "Brazil",
+                  "city": "Sao Paulo",
+                  "region": "sa-saopaulo-1"
+              },
+              {
+                  "country": "Brazil",
+                  "city": "Vinhedo",
+                  "region": "sa-vinhedo-1"
+              },
+              {
+                  "country": "Chile",
+                  "city": "Santiago",
+                  "region": "sa-santiago-1"
+              },
+              {
+                  "country": "Chile",
+                  "city": "Valparaiso",
+                  "region": "sa-valparaiso-1"
+              },
+              {
+                  "country": "Colombia",
+                  "city": "Bogota",
+                  "region": "sa-bogota-1"
+              },
+              {
+                  "country": "Mexico",
+                  "city": "Queretaro",
+                  "region": "mx-queretaro-1"
+              },
+              {
+                  "country": "Mexico",
+                  "city": "Monterrey",
+                  "region": "mx-monterrey-1"
               }
+          ]
 
-          results = []
+          MODE = os.getenv("SEARCH_MODE", "all")
 
-          print("=" * 60)
-          print("       VPS FINDER LATAM V3")
-          print("=" * 60)
+          if MODE == "brazil":
+              OCI_REGIONS = [
+                  r for r in OCI_REGIONS
+                  if r["country"] == "Brazil"
+              ]
 
-          session = requests.Session()
-          session.headers.update({
-              "User-Agent": "VPS-LATAM-Finder/3.0"
-          })
+          elif MODE == "latam":
+              OCI_REGIONS = [
+                  r for r in OCI_REGIONS
+                  if r["country"] != "Brazil"
+              ]
 
-          for name, region in regions.items():
+          KEYWORDS = [
+              "always free",
+              "free tier",
+              "free trial",
+              "promotional credit",
+              "credit card",
+              "debit card",
+              "no credit card",
+              "virtual machine",
+              "compute instance",
+              "vps",
+              "512 mb",
+              "1 gb",
+              "brazil",
+              "sao paulo",
+              "vinhedo",
+              "chile",
+              "colombia",
+              "mexico",
+              "permanent",
+              "monthly",
+              "expires"
+          ]
 
-              endpoint = (
-                  f"https://objectstorage.{region}.oraclecloud.com"
-              )
-
-              print(f"\nConsultando: {name}")
-              print(f"Region: {region}")
-
+          def inspect_page(url):
               result = {
-                  "name": name,
-                  "region": region,
-                  "checked_at": datetime.now(
-                      timezone.utc
-                  ).isoformat()
+                  "url": url,
+                  "http_status": None,
+                  "reachable": False,
+                  "keywords": [],
+                  "error": None
               }
 
               try:
-                  response = session.get(
-                      endpoint,
-                      timeout=12
+                  req = urllib.request.Request(
+                      url,
+                      headers={
+                          "User-Agent": "Mozilla/5.0 VPS-LATAM-Finder/4.0"
+                      }
                   )
 
-                  result["http_status"] = response.status_code
-                  result["endpoint_reachable"] = (
-                      response.status_code < 500
-                  )
+                  with urllib.request.urlopen(
+                      req, timeout=20
+                  ) as response:
+                      raw = response.read(250000)
+                      result["http_status"] = response.status
+                      result["reachable"] = True
 
-                  print("HTTP:", response.status_code)
-                  print(
-                      "Endpoint accesible:",
-                      result["endpoint_reachable"]
-                  )
+                  html = raw.decode("utf-8", errors="ignore")
+                  parser = TextExtractor()
+                  parser.feed(html)
 
-              except requests.RequestException as error:
-                  result["endpoint_reachable"] = False
-                  result["error"] = str(error)
-                  print("Error:", error)
+                  content = " ".join(parser.parts).lower()
+                  content = re.sub(r"\s+", " ", content)
 
-              results.append(result)
+                  for keyword in KEYWORDS:
+                      if keyword in content:
+                          result["keywords"].append(keyword)
 
-          with open("vps_results.json", "w", encoding="utf-8") as file:
+              except urllib.error.HTTPError as e:
+                  result["http_status"] = e.code
+                  result["error"] = "HTTP error"
+
+              except Exception as e:
+                  result["error"] = str(e)[:200]
+
+              return result
+
+          print("=" * 65)
+          print("       VPS FINDER LATAM V4")
+          print("       MULTI-PROVIDER RESEARCH")
+          print("=" * 65)
+
+          results = []
+
+          for provider in PROVIDERS:
+              print("\nPROVEEDOR:", provider["name"])
+
+              provider_result = {
+                  **provider,
+                  "checked_at": datetime.now(
+                      timezone.utc
+                  ).isoformat(),
+                  "pages": []
+              }
+
+              urls = [
+                  provider["url"],
+                  provider.get("free_url"),
+                  provider.get("regions_url")
+              ]
+
+              for url in filter(None, urls):
+                  print("Consultando:", url)
+
+                  page = inspect_page(url)
+                  provider_result["pages"].append(page)
+
+                  print("HTTP:", page["http_status"])
+                  print("Accesible:", page["reachable"])
+                  print("Palabras encontradas:",
+                        ", ".join(page["keywords"][:10]))
+
+              results.append(provider_result)
+
+          output = {
+              "version": "4.0",
+              "search_mode": MODE,
+              "date": datetime.now(
+                  timezone.utc
+              ).isoformat(),
+              "oci_regions": OCI_REGIONS,
+              "providers": results,
+              "limitations": [
+                  "Page reachability does not prove VPS availability.",
+                  "Keyword detection does not prove free eligibility.",
+                  "No instances were created.",
+                  "No payment methods were entered.",
+                  "Capacity requires provider APIs and account permissions."
+              ]
+          }
+
+          with open(
+              "vps_latam_v4.json",
+              "w",
+              encoding="utf-8"
+          ) as f:
               json.dump(
-                  results,
-                  file,
+                  output,
+                  f,
                   indent=2,
                   ensure_ascii=False
               )
 
-          print("\n" + "=" * 60)
-          print("RESULTADOS")
-          print("=" * 60)
+          with open(
+              "vps_latam_v4.txt",
+              "w",
+              encoding="utf-8"
+          ) as f:
+              f.write("VPS FINDER LATAM V4\n")
+              f.write("=" * 55 + "\n\n")
 
-          for result in results:
-              print(
-                  result["name"],
-                  "-",
-                  "Accesible" if result["endpoint_reachable"]
-                  else "Sin conexion"
-              )
+              for p in results:
+                  f.write("PROVEEDOR: " + p["name"] + "\n")
+                  f.write("Categoria: " + p["category"] + "\n")
+                  f.write("Notas: " + p["notes"] + "\n")
 
-          print("\nBusqueda terminada.")
-          print("Resultados guardados en vps_results.json")
-          print("HTTP accesible NO significa VPS disponible.")
-          print("No se han creado instancias.")
+                  for page in p["pages"]:
+                      f.write(
+                          "URL: " + page["url"] + "\n"
+                      )
+                      f.write(
+                          "HTTP: " + str(page["http_status"]) + "\n"
+                      )
+                      f.write(
+                          "Palabras: " +
+                          ", ".join(page["keywords"]) + "\n"
+                      )
 
+                  f.write("\n" + "-" * 45 + "\n")
+
+          print("\n" + "=" * 65)
+          print("INVESTIGACION TERMINADA")
+          print("Proveedores consultados:", len(results))
+          print("Regiones OCI catalogadas:", len(OCI_REGIONS))
+          print("JSON: vps_latam_v4.json")
+          print("TXT: vps_latam_v4.txt")
+          print("No se crearon instancias.")
           PY
 
       - name: Guardar resultados
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: VPS-Finder-LATAM-V3
-          path: vps_results.json
+          name: VPS-Finder-LATAM-V4
+          path: |
+            vps_latam_v4.json
+            vps_latam_v4.txt
           if-no-files-found: warn
-          retention-days: 7
+          retention-days: 14
