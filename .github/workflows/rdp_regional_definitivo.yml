@@ -1,0 +1,159 @@
+
+name: RDP Regional LATAM con Tailscale
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: "Duracion maxima de la PC (minutos)"
+        required: true
+        type: choice
+        default: "120"
+        options:
+          - "60"
+          - "120"
+          - "180"
+          - "240"
+
+permissions:
+  contents: read
+
+jobs:
+  remote-desktop:
+    name: Validar region y crear escritorio Ubuntu
+    runs-on: ubuntu-24.04
+    timeout-minutes: 250
+
+    steps:
+      - name: 1. Detectar pais aproximado del runner
+        id: region
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Consultando geolocalizacion aproximada de la IP publica..."
+          GEO="$(curl -4fsS --max-time 20 https://ipinfo.io/json)"
+          COUNTRY="$(printf '%s' "$GEO" | jq -r '.country // empty')"
+          CITY="$(printf '%s' "$GEO" | jq -r '.city // "desconocida"')"
+          REGION="$(printf '%s' "$GEO" | jq -r '.region // "desconocida"')"
+          IP="$(printf '%s' "$GEO" | jq -r '.ip // "desconocida"')"
+
+          if [[ -z "$COUNTRY" ]]; then
+            echo "No se pudo determinar el pais. Se cancela por seguridad."
+            exit 1
+          fi
+
+          LATAM=" AR BO BR BZ CL CO CR CU DO EC SV GT HN HT JM MX NI PA PE PR PY TT UY VE "
+          if [[ " $LATAM " != *" $COUNTRY "* ]]; then
+            echo "Runner rechazado: pais detectado=$COUNTRY, ciudad=$CITY, region=$REGION."
+            echo "Solo se aceptan Brasil y otros paises de Latinoamerica/Caribe."
+            exit 1
+          fi
+
+          if [[ "$COUNTRY" == "BR" ]]; then
+            echo "REGION ACEPTADA: BRASIL (prioridad maxima)."
+          else
+            echo "REGION ACEPTADA: LATINOAMERICA. Brasil no fue asignado en este intento."
+          fi
+
+          echo "Pais: $COUNTRY"
+          echo "Ciudad aproximada: $CITY"
+          echo "Region aproximada: $REGION"
+          echo "IP publica: $IP"
+          echo "country=$COUNTRY" >> "$GITHUB_OUTPUT"
+
+      - name: 2. Diagnosticar recursos asignados
+        shell: bash
+        run: |
+          set -e
+          echo "===== CPU ====="
+          lscpu | grep -E 'Model name|^CPU\(s\):' | head -n 4
+          echo "===== RAM ====="
+          free -h
+          echo "===== DISCO ====="
+          df -h /
+
+      - name: 3. Instalar XFCE y XRDP
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            xfce4 xfce4-goodies xrdp xorgxrdp dbus-x11
+
+      - name: 4. Crear usuario RDP
+        shell: bash
+        env:
+          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${RDP_PASSWORD:-}" ]]; then
+            echo "Falta el secreto RDP_PASSWORD en GitHub."
+            exit 1
+          fi
+          if [[ ${#RDP_PASSWORD} -lt 20 || "$RDP_PASSWORD" == *$'\n'* ]]; then
+            echo "RDP_PASSWORD debe tener al menos 20 caracteres y no contener saltos de linea."
+            exit 1
+          fi
+
+          sudo useradd --create-home --shell /bin/bash runneradmin
+          printf 'runneradmin:%s\n' "$RDP_PASSWORD" | sudo chpasswd
+          printf '%s\n' 'startxfce4' | sudo tee /home/runneradmin/.xsession >/dev/null
+          sudo chown runneradmin:runneradmin /home/runneradmin/.xsession
+          sudo chmod 600 /home/runneradmin/.xsession
+          sudo adduser xrdp ssl-cert || true
+          sudo systemctl enable xrdp
+          sudo systemctl restart xrdp
+          sleep 3
+          sudo systemctl is-active --quiet xrdp
+          sudo ss -ltn | grep -q ':3389'
+          echo "XRDP activo y escuchando en el puerto 3389."
+
+      - name: 5. Conectar el runner a Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+
+      - name: 6. Mostrar datos de conexion privada
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Esperando a que Tailscale publique el dispositivo..."
+          for i in $(seq 1 30); do
+            TS_IP="$(tailscale ip -4 2>/dev/null | head -n 1 || true)"
+            if [[ -n "$TS_IP" ]]; then
+              break
+            fi
+            sleep 2
+          done
+
+          if [[ -z "${TS_IP:-}" ]]; then
+            echo "No se pudo obtener la IP privada de Tailscale."
+            exit 1
+          fi
+
+          echo "=========================================="
+          echo "PC UBUNTU REGIONAL LISTA"
+          echo "Pais detectado: ${{ steps.region.outputs.country }}"
+          echo "IP Tailscale: $TS_IP"
+          echo "Puerto RDP: 3389"
+          echo "Usuario RDP: runneradmin"
+          echo "Contrasena: usa el secreto RDP_PASSWORD"
+          echo "=========================================="
+          echo "No compartas esta IP ni la contrasena publicamente."
+          tailscale status
+
+      - name: 7. Mantener la PC encendida
+        shell: bash
+        env:
+          DURATION: ${{ inputs.duration }}
+        run: |
+          set -euo pipefail
+          case "$DURATION" in
+            60|120|180|240) ;;
+            *) echo "Duracion no valida."; exit 1 ;;
+          esac
+          echo "La PC permanecera disponible durante $DURATION minutos."
+          echo "No canceles este workflow mientras uses el escritorio."
+          sleep "${DURATION}m"
+          echo "Tiempo finalizado. La maquina temporal se apagara."
