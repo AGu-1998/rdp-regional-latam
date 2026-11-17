@@ -1,13 +1,14 @@
-name: VPS Finder LATAM - Brasil First
+
+name: VPS Finder LATAM V2 - Brazil First
 
 on:
   workflow_dispatch:
     inputs:
       search_mode:
-        description: "Tipo de busqueda"
+        description: "Seleccionar regiones"
         required: true
         type: choice
-        default: "all"
+        default: all
         options:
           - all
           - brazil
@@ -19,18 +20,24 @@ permissions:
 jobs:
   regional-vps-finder:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
-      - name: Descargar buscador
+      - name: Descargar repositorio
         uses: actions/checkout@v4
 
       - name: Preparar Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
 
-      - name: Buscar proveedores y regiones
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install requests
+
+      - name: Buscar regiones LATAM
         env:
           SEARCH_MODE: ${{ inputs.search_mode }}
         run: |
@@ -38,8 +45,7 @@ jobs:
           import requests
           import os
           import json
-
-          mode = os.getenv("SEARCH_MODE", "all")
+          from datetime import datetime, timezone
 
           regions = {
               "Brasil - Sao Paulo": "sa-saopaulo-1",
@@ -49,71 +55,103 @@ jobs:
               "Colombia - Bogota": "sa-bogota-1",
               "Mexico - Queretaro": "mx-queretaro-1",
               "Mexico - Monterrey": "mx-monterrey-1",
-              "Uruguay": "sa-montevideo-1",
-              "Peru": "sa-lima-1",
+              "Uruguay - Montevideo": "sa-montevideo-1",
+              "Peru - Lima": "sa-lima-1"
           }
 
-          print("=" * 60)
-          print("       VPS REGIONAL FINDER - LATAM")
-          print("=" * 60)
+          mode = os.getenv("SEARCH_MODE", "all")
 
           if mode == "brazil":
               regions = {
                   k: v for k, v in regions.items()
-                  if "Brasil" in k
+                  if k.startswith("Brasil")
               }
 
           elif mode == "latam":
               regions = {
                   k: v for k, v in regions.items()
-                  if "Brasil" not in k
+                  if not k.startswith("Brasil")
               }
 
           results = []
 
+          print("=" * 60)
+          print("       VPS FINDER LATAM V2")
+          print("=" * 60)
+
+          session = requests.Session()
+          session.headers.update({
+              "User-Agent": "VPS-LATAM-Finder/2.0"
+          })
+
           for name, region in regions.items():
+
               endpoint = (
                   f"https://objectstorage.{region}.oraclecloud.com"
               )
 
+              print(f"\nConsultando: {name}")
+              print(f"Region: {region}")
+
+              result = {
+                  "name": name,
+                  "region": region,
+                  "checked_at": datetime.now(
+                      timezone.utc
+                  ).isoformat()
+              }
+
               try:
-                  response = requests.get(
+                  response = session.get(
                       endpoint,
-                      timeout=8
+                      timeout=12
                   )
 
-                  status = response.status_code
+                  result["http_status"] = response.status_code
+                  result["endpoint_reachable"] = (
+                      response.status_code < 500
+                  )
 
-                  results.append({
-                      "name": name,
-                      "region": region,
-                      "http_status": status,
-                      "endpoint_reachable": status < 500
-                  })
-
-                  print(f"\n{name}")
-                  print(f"Region: {region}")
-                  print(f"HTTP: {status}")
+                  print("HTTP:", response.status_code)
+                  print(
+                      "Endpoint accesible:",
+                      result["endpoint_reachable"]
+                  )
 
               except requests.RequestException as error:
-                  print(f"\n{name}: Error de conexion")
-                  results.append({
-                      "name": name,
-                      "region": region,
-                      "error": str(error)
-                  })
+                  result["endpoint_reachable"] = False
+                  result["error"] = str(error)
+                  print("Error:", error)
+
+              results.append(result)
 
           with open("vps_results.json", "w") as file:
-              json.dump(results, file, indent=2)
+              json.dump(results, file, indent=2, ensure_ascii=False)
 
-          print("\nBusqueda finalizada.")
-          print("Resultados guardados en vps_results.json")
-          print("NOTA: esto no confirma capacidad de VPS.")
+          print("\n" + "=" * 60)
+          print("RESULTADOS")
+          print("=" * 60)
+
+          for result in results:
+              print(
+                  result["name"],
+                  "-",
+                  "Accesible" if result["endpoint_reachable"]
+                  else "Sin conexion"
+              )
+
+          print("\nArchivo generado: vps_results.json")
+          print("Busqueda terminada.")
+          print("IMPORTANTE:")
+          print("La conexion HTTP no confirma capacidad de VPS.")
+          print("Tampoco confirma que exista un plan gratuito.")
           PY
 
-      - name: Guardar resultados
+      - name: Subir resultados
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: VPS-Finder-LATAM-Results
+          name: VPS-Finder-LATAM-V2
           path: vps_results.json
-          if-no-files-found: error
+          if-no-files-found: warn
+          retention-days: 7
